@@ -1,0 +1,22 @@
+ p o t i o n  c e l l a r
+ ------------------------
+
+- no traditional combat
+- bartering
+- potions provide different benefits (some temporary, some permanent), but also cause toxicity, accumulating more
+ toxicity can increase tolerance, reducing negative side effects
+- stats:
+  - ?
+
+visual
+------
+- billboard sprites
+- point lights with step function (not gradient)
+- dithered shading
+- heavy color grading
+- talking heads for npc conversations
+
+inspiration
+-----------
+
+- "The Hole" from Dorohedoro (magical, grunge, some technology)

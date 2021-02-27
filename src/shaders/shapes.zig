@@ -6,9 +6,8 @@ const math = @import("../math.zig");
 pub const VsParams = packed struct {
     mvp: math.Mat4 = math.Mat4.identity(),
     draw_mode: f32 = 0.0,
-    pad: [12]u8 = undefined,
+    // pad: [12]u8 = undefined,
 };
-
 
 // build a backend-specific ShaderDesc struct
 pub fn desc() sg.ShaderDesc {
@@ -66,24 +65,25 @@ pub fn desc() sg.ShaderDesc {
             ;
         },
         .GLCORE33 => {
-            result.vs.uniform_blocks[0].uniforms[0].name = "vs_params";
-            result.vs.uniform_blocks[0].uniforms[0].type = .FLOAT4;
-            result.vs.uniform_blocks[0].uniforms[0].array_count = 5;
+            result.vs.uniform_blocks[0].uniforms[0] = .{ .name = "mvp", .type = .MAT4 };
+            result.vs.uniform_blocks[0].uniforms[1] = .{ .name = "draw_mode", .type = .FLOAT };
+            // result.vs.uniform_blocks[0].uniforms[0].array_count = 5;
             result.vs.source =
                 \\ #version 330
-                \\ uniform vec4 vs_params[5];
+                \\ uniform mat4 mvp;
+                \\ uniform float draw_mode;
                 \\ layout(location = 0) in vec4 position;
                 \\ out vec4 color;
                 \\ layout(location = 1) in vec3 normal;
                 \\ layout(location = 2) in vec2 texcoord;
                 \\ layout(location = 3) in vec4 color0;
                 \\ void main() {
-                \\     gl_Position = mat4(vs_params[0], vs_params[1], vs_params[2], vs_params[3]) * position;
-                \\     if (vs_params[4].x == 0.0) {
+                \\     gl_Position = mvp * position;
+                \\     if (draw_mode == 0.0) {
                 \\         color = vec4((normal + vec3(1.0)) * 0.5, 1.0);
                 \\     }
                 \\     else {
-                \\         if (vs_params[4].x == 1.0) {
+                \\         if (draw_mode == 1.0) {
                 \\             color = vec4(texcoord, 0.0, 1.0);
                 \\         }
                 \\         else {

@@ -23,6 +23,17 @@ pub fn build(b: *bld.Builder) void {
     exe.linkLibrary(stb_lib);
     exe.addPackagePath("sokol", "deps/sokol/src/sokol/sokol.zig");
     exe.addPackagePath("stb", "deps/stb/src/stb.zig");
+    exe.addPackagePath("zlm", "deps/zlm/zlm.zig");
+    exe.addPackage(bld.Pkg{
+        .name = "wavefront-obj",
+        .path = "deps/wavefront-obj/wavefront-obj.zig",
+        .dependencies = &[_]bld.Pkg{
+            .{
+                .name = "zlm",
+                .path = "deps/zlm/zlm.zig",
+            },
+        },
+    });
 
     // fontstash
     // exe.linkLibC();

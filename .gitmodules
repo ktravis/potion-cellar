@@ -1,3 +1,9 @@
 [submodule "deps/sokol"]
 	path = deps/sokol
 	url = https://github.com/floooh/sokol-zig
+[submodule "deps/zlm"]
+	path = deps/zlm
+	url = https://github.com/ziglibs/zlm
+[submodule "deps/wavefront-obj"]
+	path = deps/wavefront-obj
+	url = https://github.com/ziglibs/wavefront-obj

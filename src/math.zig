@@ -63,7 +63,7 @@ pub const Vec3 = packed struct {
         };
     }
 
-    pub fn mul(v: Vec3, s: f32) Vec3 {
+    pub fn scale(v: Vec3, s: f32) Vec3 {
         return Vec3{
             .x = v.x * s,
             .y = v.y * s,
@@ -224,6 +224,10 @@ pub const Mat4 = packed struct {
         return res;
     }
 };
+
+pub fn normFloat(f: f32) i16 {
+    return @floatToInt(i16, 32767 * f);
+}
 
 test "Vec3.zero" {
     const v = Vec3.zero();
