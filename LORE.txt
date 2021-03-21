@@ -1,22 +1,58 @@
+ ask yourself:
+ - does this contribute to making this more playable (closer to game/fun?)
+
  p o t i o n  c e l l a r
  ------------------------
 
+- "taking the plunge"
+- magic but the magic is generally either pretty mundane (floating things, an enchanted lighter that doesn't use fuel, a
+  book with changing pages) or mind-breaking (eternal curses, multiversal destruction, uknowable shapes/topologies, ...)
 - no traditional combat
+- there is crazy stuff going on but most people are just trying to get by
+- people come from above to get resources or just generally cause problems, unclear why ("uplanders"?)
+- the people above leave old tech around
 - bartering
+- "hp": "pips" of consciousness/awareness/sanity
+  - food, intellectual stimulation contribute as resources
 - potions provide different benefits (some temporary, some permanent), but also cause toxicity, accumulating more
  toxicity can increase tolerance, reducing negative side effects
+- difficult concepts / toxic ideas as "traps" in the level
+- bullies (enemies) try to take things from you, options:
+  - reason (friendly words)
+  - bribe
+  - challenge (with aggressive ideas/words)
+  - flee
 - stats:
-  - ?
+  - rational thought / reasoning
+  - calculus
+  - mysticism/gnosis
+  - determinism
+  - coping/handling
+- gotta go down to go up
+- very limited inventory/carrying capacity encourages trade-offs, using items
+- boxes in levels to store excess items that persist between "dives"
+- return to surface to engage in COMMERCE sell/trade
+  - prices and item availability set by global conditions/events (weather, etc)
+  - can only sell or trade based upon demand?
+- allegiance/rejection of the demiurge
+- obtain different trinkets/decorations for your bag that convey different benefits
+- relationship bonds with different characters in and out of your trip
+  - maybe some are just for one time through, some are "global"
 
 visual
 ------
+- (lightweight?) serif fonts
+- animal-based humanoid characters
 - billboard sprites
 - point lights with step function (not gradient)
 - dithered shading
 - heavy color grading
 - talking heads for npc conversations
+- render low res and upscale with no AA
 
 inspiration
 -----------
 
 - "The Hole" from Dorohedoro (magical, grunge, some technology)
+- Undertale monster world
+- Tower of Babylon story (toroidal world, mining through to the other side)

@@ -10,11 +10,12 @@ pub fn Buffer(comptime T: type, count: comptime_int) type {
             self.items.len = 0;
         }
 
-        pub fn add(self: *Self, item: T) usize {
+        pub fn add(self: *Self, item: T) *T {
             std.debug.assert(self.items.len < count);
-            self.data[self.items.len] = item;
-            self.items = self.data[0 .. self.items.len + 1];
-            return self.items.len;
+            var i = self.items.len;
+            self.data[i] = item;
+            self.items = self.data[0 .. i + 1];
+            return &self.items[i];
         }
 
         pub fn addSlice(self: *Self, items: []const T) usize {

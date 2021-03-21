@@ -1,17 +1,19 @@
 const sokol = @import("sokol");
 const sg = sokol.gfx;
-const math = @import("../math.zig");
+// const math = @import("../math.zig");
+const zlm = @import("zlm");
+const vec3 = zlm.vec3;
+const Vec3 = zlm.Vec3;
+const Mat4 = zlm.Mat4;
 
 // a uniform block struct with a model-view-projection matrix
-pub const VsParams = packed struct {
-    mvp: math.Mat4
-};
+pub const VsParams = packed struct { mvp: Mat4 };
 
 // build a backend-specific ShaderDesc struct
 pub fn desc() sg.ShaderDesc {
     var result: sg.ShaderDesc = .{};
     result.vs.uniform_blocks[0].size = @sizeOf(VsParams);
-    result.fs.images[0].type = ._2D;
+    result.fs.images[0].image_type = ._2D;
     switch (sg.queryBackend()) {
         .D3D11 => {
             result.attrs[0].sem_name = "POSITION";
@@ -71,7 +73,8 @@ pub fn desc() sg.ShaderDesc {
                 \\ in vec2 uv;
                 \\ out vec4 frag_color;
                 \\ void main() {
-                \\   frag_color = texture(tex, uv) * color;
+                \\   vec4 texel = texture(tex, uv);
+                \\   frag_color = texel * color;
                 \\ }
             ;
         },

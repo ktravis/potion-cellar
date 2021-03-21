@@ -1,0 +1,16 @@
+TODO
+====
+
+[ ] make grid based on level
+[ ] show level grid "minimap"
+[ ] put movement on a grid
+[ ] scale up
+
+[ ] color grading
+[ ] hard gradient for lighting
+[ ] proper material support for models?
+[ ] separate "player" from camera
+[ ]
+[ ]
+[ ]
+

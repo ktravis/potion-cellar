@@ -9,14 +9,25 @@ const tt = @import("stb").truetype;
 const stbi = @import("stb").image;
 
 const text = @import("text.zig");
+const TextureRenderer = @import("renderer.zig").TextureRenderer;
 const Buffer = @import("buffer.zig").Buffer;
-usingnamespace @import("math.zig");
+usingnamespace @import("geom.zig");
+usingnamespace @import("level.zig");
+usingnamespace @import("scene.zig");
 const math = @import("std").math;
+
+const zlm = @import("zlm");
+const vec2 = zlm.vec2;
+const Vec2 = zlm.Vec2;
+const vec3 = zlm.vec3;
+const Vec3 = zlm.Vec3;
+const Mat4 = zlm.Mat4;
 
 const wobj = @import("wavefront-obj");
 
 const default_shader = @import("shaders/default.zig");
-const object_shader = @import("shaders/object.zig");
+
+const sample_count = 1;
 
 const state = struct {
     var mouse_held: bool = false;
@@ -34,25 +45,41 @@ const state = struct {
         fn held(c: sapp.Keycode) bool {
             return _held[@intCast(usize, @enumToInt(c))];
         }
+
+        fn heldOnce(c: sapp.Keycode) bool {
+            var h = _held[@intCast(usize, @enumToInt(c))];
+            _held[@intCast(usize, @enumToInt(c))] = false;
+            return h;
+        }
     };
     var pip: sg.Pipeline = .{};
+    var offscreen_pip: sg.Pipeline = .{};
     var bind: sg.Bindings = .{};
     var pass_action: sg.PassAction = .{};
+    var opa: sg.PassAction = .{};
 };
 
 const assets_dir = "../assets/";
 
-fn makeTexture(img_data: []const u8) sg.Image {
+fn makeImageTexture(img_data: []const u8) sg.Image {
     var ii = stbi.loadFromMemory(img_data, 4);
     var img_desc: sg.ImageDesc = .{
         .width = @intCast(i32, ii.w),
         .height = @intCast(i32, ii.h),
+        .wrap_u = .CLAMP_TO_EDGE,
+        .wrap_v = .CLAMP_TO_EDGE,
     };
     img_desc.data.subimage[0][0] = sg.asRange(ii.data);
     return sg.makeImage(img_desc);
 }
 
 fn loadObjModelFromFile(alloc: *std.mem.Allocator, path: []const u8) !Mesh {
+    var mat_path = try alloc.dupe(u8, path);
+    _ = std.mem.replace(u8, path, ".obj", ".mtl", mat_path);
+    var mat_file = try std.fs.cwd().openFile(mat_path, .{});
+    defer mat_file.close();
+    const matLib = try wobj.loadMaterials(alloc, mat_file.reader());
+
     var file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
     const model = try wobj.load(alloc, file.reader());
@@ -63,31 +90,97 @@ fn loadObjModelFromFile(alloc: *std.mem.Allocator, path: []const u8) !Mesh {
     var inds = std.ArrayList(u16).init(alloc);
     defer inds.deinit();
     try inds.ensureCapacity(1000);
-    for (model.faces) |f, i| {
-        for (f.vertices) |v| {
-            var o: Vertex = .{
-                .x = model.positions[v.position].x,
-                .y = model.positions[v.position].y,
-                .z = model.positions[v.position].z,
-                .color = 0xffffffff,
-                .u = normFloat(0),
-                .v = normFloat(0),
-            };
-            if (v.normal) |n| {
-                o.nx = model.normals[n].x;
-                o.ny = model.normals[n].y;
-                o.nz = model.normals[n].z;
+    for (model.objects) |o| {
+        var color: u32 = white;
+        if (o.material) |m| {
+            if (matLib.materials.get(m)) |found| {
+                if (found.diffuse_color) |col| {
+                    color = @floatToInt(u32, 0xff * col.r) << 0 |
+                        @floatToInt(u32, 0xff * col.g) << 8 |
+                        @floatToInt(u32, 0xff * col.b) << 16 |
+                        0xff << 24;
+                }
             }
-            _ = try inds.append(@intCast(u16, verts.items.len));
-            _ = try verts.append(o);
+        }
+        for (model.faces[o.start .. o.start + o.count]) |f| {
+            for (f.vertices) |v| {
+                var vert: Vertex = .{
+                    .x = model.positions[v.position].x,
+                    .y = model.positions[v.position].y,
+                    .z = model.positions[v.position].z,
+                    .color = color,
+                };
+                if (v.normal) |n| {
+                    vert.nx = model.normals[n].x;
+                    vert.ny = model.normals[n].y;
+                    vert.nz = model.normals[n].z;
+                }
+                _ = try inds.append(@intCast(u16, verts.items.len));
+                _ = try verts.append(vert);
+            }
         }
     }
     return sr.loadMesh(verts.items, inds.items);
 }
 
+const levelString =
+    \\oooooooooooooooo
+    \\o..............o
+    \\o..............o
+    \\o...oooooooo...o
+    \\o...o.....oo...o
+    \\o...o.....oo...o
+    \\o...ooo..ooo...o
+    \\o..............o
+    \\oooo...........o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o......oo......o
+    \\o......oo..oo..o
+    \\o..........oo..o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o..............o
+    \\o......oo......o
+    \\o......oo..oo..o
+    \\o..........oo..o
+    \\o..............o
+    \\oooooooooooooooo
+;
+
+var tree: *Object = undefined;
+
+var level: Level = .{};
+
+const player = struct {
+    var height: f32 = 0.8;
+
+    var coord: Level.Coord = .{
+        .x = 2,
+        .y = 2,
+    };
+    var facing: enum {
+        NORTH,
+        EAST,
+        SOUTH,
+        WEST,
+    } = .NORTH;
+};
+
+var map_pass: sg.Pass = .{};
+var render_pass: sg.Pass = .{};
+var map_open = false;
+
 export fn init() void {
+    // parse the level
     stime.setup();
-    var ubuntu_32 = tt.Font.init(@embedFile(assets_dir ++ "fonts/Ubuntu-M.ttf"), 32) catch unreachable;
+    var ubuntu_32 = tt.Font.init(@embedFile(assets_dir ++ "fonts/Ubuntu-M.ttf"), 72) catch unreachable;
     // font = tt.Font.init(@embedFile("../Comic-Sans.ttf"), 42) catch unreachable;
     const ctx = sgapp.context();
     sg.setup(.{ .context = ctx });
@@ -96,20 +189,48 @@ export fn init() void {
     sg.applyViewport(0, 0, sapp.width(), sapp.height(), true);
 
     // framebuffer clear color
-    state.pass_action.colors[0] = .{ .action = .CLEAR, .val = .{ 1.0, 0.92, 0.8, 1.0 } };
+    state.pass_action.colors[0] = .{ .action = .CLEAR, .value = .{ .r = 1.0, .g = 0.92, .b = 0.8, .a = 1.0 } };
+    state.opa.colors[0] = .{ .action = .CLEAR, .value = .{ .r = 1.0, .g = 0, .b = 1, .a = 1.0 } };
+
+    {
+        const defaultShader = sg.makeShader(default_shader.desc());
+        var pip_desc: sg.PipelineDesc = .{
+            .shader = defaultShader,
+            .index_type = .UINT16,
+            .depth = .{
+                .compare = .LESS_EQUAL,
+                .write_enabled = true,
+            },
+            .cull_mode = .BACK,
+        };
+        pip_desc.colors[0].pixel_format = .RGBA8;
+        pip_desc.colors[0].blend = .{
+            .enabled = true,
+            .src_factor_rgb = .SRC_ALPHA,
+            .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+            .src_factor_alpha = .SRC_ALPHA,
+            .dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+        };
+        pip_desc.layout.attrs[0].format = .FLOAT3;
+        pip_desc.layout.attrs[1].format = .UBYTE4N;
+        pip_desc.layout.attrs[2].format = .SHORT2N;
+        state.pip = sg.makePipeline(pip_desc);
+        pip_desc.depth.pixel_format = .DEPTH;
+        state.offscreen_pip = sg.makePipeline(pip_desc);
+    }
 
     sr.init();
-    tr.init(&ubuntu_32);
+    textRenderer.init(&ubuntu_32);
+    r.init();
 
     stbi.setFlipVerticallyOnLoad(true);
 
     const quad_mesh = sr.loadMesh(quad.vertices, quad.indices);
-    var floor_transform = Mat4.identity();
-    floor_transform.scale(100);
-    floor_transform = Mat4.mul(Mat4.rotate(-90, .{ .x = 1, .y = 0, .z = 0 }), floor_transform);
+    var floor_transform = Mat4.createUniformScale(120);
+    floor_transform = Mat4.mul(Mat4.createAngleAxis(.{ .x = 1, .y = 0, .z = 0 }, zlm.toRadians(90.0)), floor_transform);
     _ = sr.objs.add(.{
         .mesh = quad_mesh,
-        .texture = makeTexture(@embedFile(assets_dir ++ "images/test.png")),
+        .texture = makeImageTexture(@embedFile(assets_dir ++ "images/test.png")),
         .transform = floor_transform,
         .pos = .{ .x = 0, .y = 0, .z = 0 },
     });
@@ -118,38 +239,61 @@ export fn init() void {
     defer arena.deinit();
     var alloc = &arena.allocator;
 
-    const statue = loadObjModelFromFile(alloc, "assets/models/statue_head.obj") catch {
-        @panic("failed loading cactus");
-    };
-    const red_texture = blk: {
-        var img_desc: sg.ImageDesc = .{
-            .width = 1,
-            .height = 1,
-        };
-        img_desc.data.subimage[0][0] = sg.asRange(&[_]u8{ 0xaa, 0xaa, 0xaa, 0xff });
-        break :blk sg.makeImage(img_desc);
+    const statue = loadObjModelFromFile(alloc, "assets/models/tree_fat.obj") catch {
+        @panic("failed loading statue");
     };
 
-    const cube_mesh = sr.loadMesh(cube.vertices, cube.indices);
-    var cube_transform = Mat4.identity();
-    cube_transform.scale(1);
-    _ = sr.objs.add(.{
-        .mesh = statue,
-        .texture = red_texture,
-        .transform = cube_transform,
-        .pos = .{ .x = 1, .y = 1, .z = -6 },
-    });
+    // build the level mesh
+    const level_start_x = -10;
+    const level_start_z = -10;
+    var level_start = Vec3{ .x = 0, .y = 0.5, .z = 0 };
+    var pos = Vec3{ .x = 0, .y = 0, .z = 0 };
+    var level_mesh_data = .{
+        .verts = std.ArrayList(Vertex).init(alloc),
+        .indices = std.ArrayList(u16).init(alloc),
+    };
+    const block_size: Vec3 = .{
+        .x = Level.TILE_SCALE,
+        .y = 2,
+        .z = Level.TILE_SCALE,
+    };
 
-    var quad_transform = Mat4.identity();
-    quad_transform.scale(2);
+    level = Level.init(levelString);
+    var l_it = level.iter();
+    while (l_it.next()) |c| {
+        switch (level.at(c)) {
+            .WALL => {
+                var offset = @intCast(u16, level_mesh_data.verts.items.len);
+                var faces = cube.north_face_verts ++
+                    cube.south_face_verts ++
+                    cube.west_face_verts ++
+                    cube.east_face_verts ++
+                    // cube.bottom_face_verts ++
+                    cube.top_face_verts;
+                for (faces) |v| {
+                    _ = level_mesh_data.verts.append(v.translate(.{ .x = @intToFloat(f32, c.x), .y = 0, .z = @intToFloat(f32, c.y) })) catch unreachable;
+                }
+                var i: u16 = 0;
+                while (i < faces.len) : (i += 4) {
+                    for (quad.indices) |index| {
+                        _ = level_mesh_data.indices.append(index + offset + i) catch unreachable;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    map_pass = minimapPass();
+    render_pass = renderPass();
+    const level_mesh = sr.loadMesh(level_mesh_data.verts.items, level_mesh_data.indices.items);
     _ = sr.objs.add(.{
-        .mesh = quad_mesh,
-        .transform = quad_transform,
-        .pos = .{ .x = 0, .y = 1, .z = -10 },
+        .mesh = level_mesh,
+        .transform = Mat4.createScale(block_size.x, block_size.y, block_size.z),
+        .pos = level_start,
+        // .texture = map_texture,
     });
 }
-
-var rotation: f32 = 0;
 
 export fn event(_e: [*c]const sapp.Event) void {
     if (_e == null) return;
@@ -163,7 +307,6 @@ export fn event(_e: [*c]const sapp.Event) void {
             // }
         },
         .MOUSE_DOWN => {
-            rotation += 1;
             // switch (e.mouse_button) {
             //     .LEFT => {
             //         state.mouse_held = true;
@@ -189,314 +332,238 @@ export fn event(_e: [*c]const sapp.Event) void {
 }
 
 var sr: SceneRenderer = .{};
-var tr: text.Renderer = .{};
-
-const quad = struct {
-    const vertices = &[_]Vertex{
-        .{
-            .x = -0.5,
-            .y = -0.5,
-            .z = 0,
-            .color = 0x00ffffff,
-            .u = normFloat(0),
-            .v = normFloat(0),
-            .nz = 1.0,
-        },
-        .{
-            .x = 0.5,
-            .y = -0.5,
-            .z = 0,
-            .color = 0xffffffff,
-            .u = normFloat(1),
-            .v = normFloat(0),
-            .nz = 1.0,
-        },
-        .{
-            .x = 0.5,
-            .y = 0.5,
-            .z = 0,
-            .color = 0xffffffff,
-            .u = normFloat(1),
-            .v = normFloat(1),
-            .nz = 1.0,
-        },
-        .{
-            .x = -0.5,
-            .y = 0.5,
-            .z = 0,
-            .color = 0xffffffff,
-            .u = normFloat(0),
-            .v = normFloat(1),
-            .nz = 1.0,
-        },
-    };
-    const indices = &[_]u16{
-        0, 1, 2, 0, 2, 3,
-    };
-};
-
-const cube = struct {
-    const vertices = &[_]Vertex{
-        .{ .x = 0.5, .y = 0.5, .z = -0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .nz = -1.0 },
-        .{ .x = 0.5, .y = -0.5, .z = -0.5, .color = white, .u = normFloat(1), .v = 0, .nz = -1.0 },
-        .{ .x = -0.5, .y = -0.5, .z = -0.5, .color = white, .u = 0, .v = 0, .nz = -1.0 },
-        .{ .x = -0.5, .y = 0.5, .z = -0.5, .color = white, .u = 0, .v = normFloat(1), .nz = -1.0 },
-
-        .{ .x = 0.5, .y = 0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .nz = 1 },
-        .{ .x = 0.5, .y = -0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = 0, .nz = 1 },
-        .{ .x = -0.5, .y = -0.5, .z = 0.5, .color = white, .u = 0, .v = 0, .nz = 1 },
-        .{ .x = -0.5, .y = 0.5, .z = 0.5, .color = white, .u = 0, .v = normFloat(1), .nz = 1 },
-
-        .{ .x = -0.5, .y = 0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .nx = -1.0 },
-        .{ .x = -0.5, .y = 0.5, .z = -0.5, .color = white, .u = normFloat(1), .v = 0, .nx = -1.0 },
-        .{ .x = -0.5, .y = -0.5, .z = -0.5, .color = white, .u = 0, .v = 0, .nx = -1.0 },
-        .{ .x = -0.5, .y = -0.5, .z = 0.5, .color = white, .u = 0, .v = normFloat(1), .nx = -1.0 },
-
-        .{ .x = 0.5, .y = 0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .nx = 1 },
-        .{ .x = 0.5, .y = 0.5, .z = -0.5, .color = white, .u = normFloat(1), .v = 0, .nx = 1 },
-        .{ .x = 0.5, .y = -0.5, .z = -0.5, .color = white, .u = 0, .v = 0, .nx = 1 },
-        .{ .x = 0.5, .y = -0.5, .z = 0.5, .color = white, .u = 0, .v = normFloat(1), .nx = 1 },
-
-        .{ .x = 0.5, .y = -0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .ny = -1 },
-        .{ .x = -0.5, .y = -0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = 0, .ny = -1 },
-        .{ .x = -0.5, .y = -0.5, .z = -0.5, .color = white, .u = 0, .v = 0, .ny = -1 },
-        .{ .x = 0.5, .y = -0.5, .z = -0.5, .color = white, .u = 0, .v = normFloat(1), .ny = -1 },
-
-        .{ .x = 0.5, .y = 0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = normFloat(1), .ny = 1 },
-        .{ .x = -0.5, .y = 0.5, .z = 0.5, .color = white, .u = normFloat(1), .v = 0, .ny = 1 },
-        .{ .x = -0.5, .y = 0.5, .z = -0.5, .color = white, .u = 0, .v = 0, .ny = 1 },
-        .{ .x = 0.5, .y = 0.5, .z = -0.5, .color = white, .u = 0, .v = normFloat(1), .ny = 1 },
-    };
-
-    // cube index buffer
-    const indices = &[_]u16{
-        0,  1,  2,  0,  2,  3,
-        6,  5,  4,  7,  6,  4,
-        8,  9,  10, 8,  10, 11,
-        14, 13, 12, 15, 14, 12,
-        16, 17, 18, 16, 18, 19,
-        22, 21, 20, 23, 22, 20,
-    };
-};
+var r: TextureRenderer = .{};
+var textRenderer: text.Renderer = .{};
 
 const white = 0xffffffff;
-
-// a vertex struct with position, color and uv-coords
-pub const Vertex = packed struct {
-    x: f32,
-    y: f32,
-    z: f32,
-    color: u32,
-    u: i16,
-    v: i16,
-    nx: f32 = 0,
-    ny: f32 = 0,
-    nz: f32 = 0,
-};
-
-const Shape = struct {
-    pos: Vec3 = Vec3.zero(),
-    draw: sshape.ElementRange = .{},
-};
-
-const Mesh = struct {
-    base_element: u32,
-    num_elements: u32,
-};
-
-const Object = struct {
-    mesh: Mesh,
-    texture: ?sg.Image = null,
-
-    pos: Vec3 = Vec3.zero(),
-    transform: Mat4 = Mat4.identity(),
-    vs_params: object_shader.VsParams = undefined,
-};
-
-const Camera = struct {
-    pos: Vec3 = .{ .x = 0.0, .y = 1, .z = 0.0 },
-    dir: Vec3 = .{ .x = 0.0, .y = 0, .z = 1.0 },
-    up: Vec3 = Vec3.up(),
-
-    pub fn view(self: Camera) Mat4 {
-        return Mat4.lookat(self.pos, self.pos.sub(self.dir), self.up);
-    }
-};
-
-const SceneRenderer = struct {
-    const Self = @This();
-
-    const MAX_VERTS = 65535;
-    objs: Buffer(Object, MAX_VERTS) = .{},
-    verts: Buffer(Vertex, MAX_VERTS) = .{},
-    indices: Buffer(u16, 10000) = .{},
-    new_mesh_data: bool = false,
-    pip: sg.Pipeline = .{},
-    bind: sg.Bindings = .{},
-    camera: Camera = .{},
-    vs_params: object_shader.VsParams = undefined,
-    default_texture: sg.Image = .{},
-
-    fn init(self: *Self) void {
-        // shader- and pipeline-object
-        var pip_desc: sg.PipelineDesc = .{
-            .shader = sg.makeShader(object_shader.desc()),
-            .index_type = .UINT16,
-            .blend = .{
-                .enabled = true,
-                .src_factor_rgb = .SRC_ALPHA,
-                .dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
-            },
-            .depth_stencil = .{
-                .depth_compare_func = .LESS_EQUAL,
-                .depth_write_enabled = true,
-            },
-            .rasterizer = .{
-                .cull_mode = .BACK,
-                .face_winding = .CCW,
-                // .cull_mode = .NONE,
-            },
-        };
-        pip_desc.layout.attrs[0].format = .FLOAT3;
-        pip_desc.layout.attrs[1].format = .UBYTE4N;
-        pip_desc.layout.attrs[2].format = .SHORT2N;
-        pip_desc.layout.attrs[3].format = .FLOAT3;
-        self.pip = sg.makePipeline(pip_desc);
-
-        // a checkerboard texture
-        const img_width = 8;
-        const img_height = 8;
-        const pixels = init: {
-            var res: [img_width][img_height]u32 = undefined;
-            var y: usize = 0;
-            while (y < img_height) : (y += 1) {
-                var x: usize = 0;
-                while (x < img_width) : (x += 1) {
-                    res[y][x] = if (0 == (y ^ x) & 1) 0xFF_00_00_00 else 0xFF_FF_FF_FF;
-                }
-            }
-            break :init res;
-        };
-        var img_desc: sg.ImageDesc = .{
-            .width = img_width,
-            .height = img_height,
-        };
-        // FIXME: https://github.com/ziglang/zig/issues/6068
-        img_desc.data.subimage[0][0] = sg.asRange(pixels);
-        self.default_texture = sg.makeImage(img_desc);
-        self.bind.fs_images[0] = self.default_texture;
-
-        self.bind.vertex_buffers[0] = sg.makeBuffer(.{
-            .usage = .STREAM,
-            .size = 6 * 4096,
-        });
-        self.bind.index_buffer = sg.makeBuffer(.{
-            .type = .INDEXBUFFER,
-            .usage = .STREAM,
-            .size = 6 * 4096,
-        });
-    }
-
-    fn loadMesh(self: *Self, verts: []const Vertex, indices: []const u16) Mesh {
-        var m = Mesh{
-            .base_element = @intCast(u32, self.indices.items.len),
-            .num_elements = @intCast(u32, indices.len),
-        };
-        const n = @intCast(u16, self.verts.items.len);
-        _ = self.verts.addSlice(verts);
-        for (indices) |i| {
-            _ = self.indices.add(n + i);
-        }
-        self.new_mesh_data = true;
-        return m;
-    }
-
-    fn drawMesh(self: *Self, m: Mesh, vs_params: object_shader.VsParams) void {
-        sg.applyUniforms(.VS, 0, sg.asRange(vs_params));
-        sg.draw(m.base_element, m.num_elements, 1);
-    }
-
-    fn render(self: *Self) void {
-        if (self.new_mesh_data) {
-            sg.updateBuffer(self.bind.vertex_buffers[0], sg.asRange(self.verts.items));
-            sg.updateBuffer(self.bind.index_buffer, sg.asRange(self.indices.items));
-            self.new_mesh_data = false;
-        }
-        sg.applyPipeline(self.pip);
-
-        self.objs.items[1].transform = Mat4.mul(Mat4.rotate(0.5, Vec3.up()), self.objs.items[1].transform);
-        self.objs.items[1].transform = Mat4.mul(Mat4.rotate(0.1, .{ .x = -1, .y = 0, .z = 0 }), self.objs.items[1].transform);
-
-        const proj = Mat4.persp(60.0, sapp.widthf() / sapp.heightf(), 0.01, 100.0);
-        const view_proj = Mat4.mul(proj, self.camera.view());
-
-        for (self.objs.items) |obj| {
-            self.bind.fs_images[0] = obj.texture orelse self.default_texture;
-            sg.applyBindings(self.bind);
-            var vs_params = obj.vs_params;
-            vs_params.model = Mat4.mul(Mat4.translate(obj.pos), obj.transform);
-            vs_params.view = self.camera.view();
-            vs_params.view_pos = self.camera.pos;
-            vs_params.projection = proj;
-            // vs_params.light_pos = .{ .x = 0, .y = 20, .z = 0 };
-            self.drawMesh(obj.mesh, vs_params);
-        }
-    }
-};
 
 const target_frametime = 8.33;
 var last_time: u64 = 0;
 
+var last_move_time: u64 = 0;
+
+fn drawMap() void {
+    var xy = vec2(2, 2);
+    var map_w: f32 = minimap_max_w - xy.x * 2;
+    var map_h: f32 = minimap_max_h - xy.y * 2;
+    r.drawRect(.{ .pos = xy, .w = map_w, .h = map_h }, .{
+        .tint = 0xffabede2,
+    });
+
+    // map should be centered around the player:
+    // - find center of texture
+
+    var center = Vec2.new(map_w / 2, map_h / 2);
+
+    var block_size: f32 = if (map_open) 2 else 8;
+    var pad: f32 = if (map_open) 1 else 4;
+    var l_it = level.iter();
+    while (l_it.next()) |c| {
+        var tint: u32 = 0xff0000ff;
+        if (level.at(c).solid()) {
+            tint = 0xff000000;
+        } else if (coordsEqual(player.coord, c)) {
+            tint = white;
+        }
+        r.drawRect(.{ .pos = center.add(Vec2.new(@intToFloat(f32, c.x - player.coord.x), @intToFloat(f32, c.y - player.coord.y)).scale(block_size + pad)), .w = block_size, .h = block_size }, .{ .tint = tint });
+    }
+
+    // borders
+
+    // left
+    r.drawRect(.{ .pos = .{ .x = xy.x - 2, .y = xy.y - 2 }, .w = 2, .h = map_h + 4 }, .{});
+    // right
+    r.drawRect(.{ .pos = .{ .x = xy.x + map_w, .y = xy.y - 2 }, .w = 2, .h = map_h + 4 }, .{});
+    // top
+    r.drawRect(.{ .pos = .{ .x = xy.x - 2, .y = xy.y - 2 }, .w = map_w + 4, .h = 2 }, .{});
+    // bottom
+    r.drawRect(.{ .pos = .{ .x = xy.x - 2, .y = xy.y + map_h }, .w = map_w + 4, .h = 2 }, .{});
+}
+
+const minimap_max_w = 512 / 4;
+const minimap_max_h = 512 / 4;
+var map_texture: sg.Image = .{};
+var render_texture: sg.Image = .{};
+
+fn renderPass() sg.Pass {
+    var img_desc: sg.ImageDesc = .{
+        .render_target = true,
+        .width = 240,
+        .height = 160,
+        .pixel_format = .RGBA8,
+        .min_filter = .NEAREST,
+        .mag_filter = .NEAREST,
+        // .min_filter = .LINEAR,
+        // .mag_filter = .LINEAR,
+        // .wrap_u = .REPEAT,
+        // .wrap_v = .REPEAT,
+        .sample_count = sample_count,
+    };
+    render_texture = sg.makeImage(img_desc);
+    img_desc.pixel_format = .DEPTH;
+    const depth_img = sg.makeImage(img_desc);
+
+    var pass_desc: sg.PassDesc = .{};
+    pass_desc.color_attachments[0].image = render_texture;
+    pass_desc.depth_stencil_attachment.image = depth_img;
+    return sg.makePass(pass_desc);
+}
+
+fn minimapPass() sg.Pass {
+    var img_desc: sg.ImageDesc = .{
+        .render_target = true,
+        .width = minimap_max_w,
+        .height = minimap_max_h,
+        .pixel_format = .RGBA8,
+        .min_filter = .NEAREST,
+        .mag_filter = .NEAREST,
+        // .wrap_u = .REPEAT,
+        // .wrap_v = .REPEAT,
+        .sample_count = sample_count,
+    };
+    map_texture = sg.makeImage(img_desc);
+    img_desc.pixel_format = .DEPTH;
+    const depth_img = sg.makeImage(img_desc);
+
+    var pass_desc: sg.PassDesc = .{};
+    pass_desc.color_attachments[0].image = map_texture;
+    pass_desc.depth_stencil_attachment.image = depth_img;
+    return sg.makePass(pass_desc);
+}
+
 export fn frame() void {
     const now = stime.now();
     const x = now - last_time;
-    if (stime.ms(x) < target_frametime) {
+    const dt = stime.ms(x);
+    if (dt < target_frametime) {
         const ns = (target_frametime - stime.ms(x)) * 1_000_000;
         std.time.sleep(@floatToInt(u64, ns));
     }
     last_time = now;
 
-    if (state.inputs.held(.S)) {
-        const o = sr.camera.dir.norm().scale(0.1);
-        sr.camera.pos = sr.camera.pos.add(o);
+    if (state.inputs.heldOnce(.M)) {
+        map_open = !map_open;
     }
-    if (state.inputs.held(.W)) {
-        const o = sr.camera.dir.norm().scale(-0.1);
-        sr.camera.pos = sr.camera.pos.add(o);
+    const moveSpeed = @floatCast(f32, 0.01 * dt);
+    if (stime.ms(now - last_move_time) > 200) {
+        var new_pos = player.coord;
+        if (state.inputs.held(.S)) {
+            switch (player.facing) {
+                .NORTH => new_pos.y -= 1,
+                .EAST => new_pos.x += 1,
+                .SOUTH => new_pos.y += 1,
+                .WEST => new_pos.x -= 1,
+            }
+        }
+        if (state.inputs.held(.W)) {
+            switch (player.facing) {
+                .NORTH => new_pos.y += 1,
+                .EAST => new_pos.x -= 1,
+                .SOUTH => new_pos.y -= 1,
+                .WEST => new_pos.x += 1,
+            }
+        }
+        if (state.inputs.held(.Q)) {
+            switch (player.facing) {
+                .NORTH => new_pos.x += 1,
+                .EAST => new_pos.y += 1,
+                .SOUTH => new_pos.x -= 1,
+                .WEST => new_pos.y -= 1,
+            }
+        }
+        if (state.inputs.held(.E)) {
+            switch (player.facing) {
+                .NORTH => new_pos.x -= 1,
+                .EAST => new_pos.y -= 1,
+                .SOUTH => new_pos.x += 1,
+                .WEST => new_pos.y += 1,
+            }
+        }
+        if (!coordsEqual(player.coord, new_pos) and !level.collide(new_pos)) {
+            player.coord = new_pos;
+            last_move_time = now;
+        }
+        if (state.inputs.held(.A)) {
+            player.facing = switch (player.facing) {
+                .EAST => .NORTH,
+                .SOUTH => .EAST,
+                .WEST => .SOUTH,
+                .NORTH => .WEST,
+            };
+            last_move_time = now;
+        }
+        if (state.inputs.held(.D)) {
+            player.facing = switch (player.facing) {
+                .NORTH => .EAST,
+                .EAST => .SOUTH,
+                .SOUTH => .WEST,
+                .WEST => .NORTH,
+            };
+            last_move_time = now;
+        }
     }
-    if (state.inputs.held(.Q)) {
-        const o = sr.camera.dir.norm().cross(sr.camera.up).scale(0.1);
-        sr.camera.pos = sr.camera.pos.add(o);
+    var target_pos = level.fromGridCoord(player.coord);
+    target_pos.y = player.height;
+    sr.camera.pos = sr.camera.pos.add(target_pos.sub(sr.camera.pos).scale(0.1));
+
+    const turnSpeed = 0.05 * @floatCast(f32, dt / 10);
+    var dir = sr.camera.dir;
+    switch (player.facing) {
+        .NORTH => dir = .{ .x = 0, .y = 0, .z = -1 },
+        .EAST => dir = .{ .x = 1, .y = 0, .z = 0 },
+        .SOUTH => dir = .{ .x = 0, .y = 0, .z = 1 },
+        .WEST => dir = .{ .x = -1, .y = 0, .z = 0 },
     }
-    if (state.inputs.held(.E)) {
-        const o = sr.camera.dir.norm().cross(sr.camera.up).scale(-0.1);
-        sr.camera.pos = sr.camera.pos.add(o);
-    }
-    if (state.inputs.held(.A)) {
-        const camt = math.cos(@as(f32, -0.02));
-        const samt = math.sin(@as(f32, -0.02));
-        sr.camera.dir = .{ .x = sr.camera.dir.x * camt - sr.camera.dir.z * samt, .y = 0, .z = sr.camera.dir.x * samt + sr.camera.dir.z * camt };
-    }
-    if (state.inputs.held(.D)) {
-        const camt = math.cos(@as(f32, 0.02));
-        const samt = math.sin(@as(f32, 0.02));
-        sr.camera.dir = .{ .x = sr.camera.dir.x * camt - sr.camera.dir.z * samt, .y = 0, .z = sr.camera.dir.x * samt + sr.camera.dir.z * camt };
+    sr.camera.dir = sr.camera.dir.add(dir.sub(sr.camera.dir).scale(0.1));
+
+    {
+        sg.beginPass(map_pass, state.opa);
+        sg.applyPipeline(state.offscreen_pip);
+        r.begin(Mat4.createOrthogonal(0, minimap_max_w, minimap_max_h, 0, -1, 1));
+        drawMap();
+        r.end();
+        sg.endPass();
     }
 
-    sg.beginDefaultPass(state.pass_action, sapp.width(), sapp.height());
+    {
+        sg.beginPass(render_pass, state.opa);
 
-    // render scene
-    //
-    sr.render();
+        // render scene
+        //
+        sr.render();
 
-    // render UI (ortho)
-    //
-    tr.begin(sapp.widthf(), sapp.heightf());
-    var buf: [256]u8 = undefined;
-    tr.drawString(std.fmt.bufPrint(&buf, "pos: [{}]", .{sr.camera.pos}) catch "error", .{ .x = 8, .y = 28 }, .{});
-    tr.end();
+        sg.applyPipeline(state.offscreen_pip);
+        // render UI (ortho)
+        //
+        // TODO(ktravis): this should work as just plain "world-space" text, need to adapt it
+        const proj = Mat4.createPerspective(zlm.toRadians(60.0), sapp.widthf() / sapp.heightf(), 0.01, 100.0);
+        const view_proj = Mat4.mul(proj, sr.camera.view());
 
-    sg.endPass();
+        r.begin(Mat4.createOrthogonal(0, sapp.widthf() / 4, sapp.heightf() / 4, 0, -1, 1));
+
+        {
+            if (map_open) {
+                r.drawRectTextured(.{ .pos = .{ .x = (sapp.widthf() / 4) / 2 - 250 / 4, .y = 10 / 4 }, .w = minimap_max_w, .h = minimap_max_h }, .{}, map_texture);
+            } else {
+                r.drawRectTextured(.{ .pos = .{ .x = sapp.widthf() / 4 - 60, .y = 2 }, .w = minimap_max_w / 2, .h = minimap_max_h / 2 }, .{ .tint = 0xaaffffff }, map_texture);
+            }
+        }
+
+        r.end();
+        sg.endPass();
+    }
+
+    {
+        sg.beginDefaultPass(state.pass_action, sapp.width(), sapp.height());
+        sg.applyPipeline(state.pip);
+        r.begin(Mat4.createOrthogonal(0, sapp.widthf(), sapp.heightf(), 0, -1, 1));
+        r.drawRectTextured(.{ .pos = .{ .x = 0, .y = 0 }, .w = sapp.widthf(), .h = sapp.heightf() }, .{}, render_texture);
+        var buf: [256]u8 = undefined;
+        textRenderer.drawString(&r, std.fmt.bufPrint(&buf, "pos: [{}, {}]", .{ player.coord.x, player.coord.y }) catch "error", .{ .x = 8, .y = 28 }, .{ .scale = 0.5 });
+        r.end();
+        sg.endPass();
+    }
+
     sg.commit();
 }
 
@@ -510,9 +577,9 @@ pub fn main() void {
         .frame_cb = frame,
         .event_cb = event,
         .cleanup_cb = cleanup,
-        .width = 800,
-        .height = 600,
-        .sample_count = 4,
+        .width = 240 * 4,
+        .height = 160 * 4,
+        .sample_count = sample_count,
         .window_title = "potion cellar",
     });
 }

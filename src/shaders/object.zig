@@ -1,15 +1,23 @@
 const sokol = @import("sokol");
 const sg = sokol.gfx;
-const math = @import("../math.zig");
+// const math = @import("../math.zig");
+const zlm = @import("zlm");
+const vec3 = zlm.vec3;
+const Vec3 = zlm.Vec3;
+const Mat4 = zlm.Mat4;
+
+pub const PointLight = extern struct {
+    pos: Vec3,
+};
 
 // a uniform block struct with a model-view-projection matrix
 pub const VsParams = extern struct {
-    model: math.Mat4,
-    view: math.Mat4,
-    projection: math.Mat4,
-    view_pos: math.Vec3,
-    // light_pos: math.Vec3,
-    // pad: f32 = 0.0,
+    model: Mat4,
+    view: Mat4,
+    projection: Mat4,
+    view_pos: Vec3,
+    num_lights: f32 = 0.0,
+    lights: [8]PointLight = undefined,
     // pad: [4]u8 = undefined,
 };
 
@@ -22,7 +30,7 @@ pub fn desc() sg.ShaderDesc {
     var result: sg.ShaderDesc = .{};
     result.vs.uniform_blocks[0].size = @sizeOf(VsParams);
     // result.fs.uniform_blocks[0].size = @sizeOf(FsParams);
-    result.fs.images[0].type = ._2D;
+    result.fs.images[0].image_type = ._2D;
     switch (sg.queryBackend()) {
         .D3D11 => {
             result.attrs[0].sem_name = "POSITION";
@@ -63,6 +71,8 @@ pub fn desc() sg.ShaderDesc {
             result.vs.uniform_blocks[0].uniforms[1] = .{ .name = "view", .type = .MAT4 };
             result.vs.uniform_blocks[0].uniforms[2] = .{ .name = "projection", .type = .MAT4 };
             result.vs.uniform_blocks[0].uniforms[3] = .{ .name = "view_pos", .type = .FLOAT3 };
+            result.vs.uniform_blocks[0].uniforms[4] = .{ .name = "num_lights", .type = .FLOAT };
+            result.vs.uniform_blocks[0].uniforms[5] = .{ .name = "lights", .type = .FLOAT3, .array_count = 8 };
             // result.vs.uniform_blocks[0].uniforms[3] = .{ .name = "light_pos", .type = .FLOAT3 };
             result.fs.images[0].name = "tex";
             result.vs.source =
@@ -71,6 +81,8 @@ pub fn desc() sg.ShaderDesc {
                 \\ uniform mat4 view;
                 \\ uniform mat4 projection;
                 \\ uniform vec3 view_pos;
+                \\ uniform float num_lights;
+                \\ uniform vec3 lights[8];
                 \\ layout(location = 0) in vec3 position;
                 \\ layout(location = 1) in vec4 color0;
                 \\ layout(location = 2) in vec2 texcoord0;
@@ -79,15 +91,17 @@ pub fn desc() sg.ShaderDesc {
                 \\ out vec2 uv;
                 \\ out vec3 Normal;
                 \\ out vec3 frag_pos;
-                \\ out vec3 lightPos;
                 \\ out vec3 viewPos;
+                \\ flat out float numLights;
+                \\ out vec3 the_lights[8];
                 \\ void main() {
                 \\   gl_Position = projection * view * model * vec4(position, 1.0);
                 \\   color = color0;
                 \\   uv = texcoord0;
                 \\   Normal = mat3(transpose(inverse(model))) * normal;
                 \\   frag_pos = vec3(model * vec4(position, 1.0));
-                \\   lightPos = vec3(0, 10, 5);
+                \\   numLights = num_lights;
+                \\   the_lights = lights;
                 \\   viewPos = view_pos;
                 \\ }
             ;
@@ -98,7 +112,8 @@ pub fn desc() sg.ShaderDesc {
                 \\ in vec2 uv;
                 \\ in vec3 Normal;
                 \\ in vec3 frag_pos;
-                \\ in vec3 lightPos;
+                \\ flat in float numLights;
+                \\ in vec3 the_lights[8];
                 \\ in vec3 viewPos;
                 \\ out vec4 frag_color;
                 \\ void main() {
@@ -106,20 +121,30 @@ pub fn desc() sg.ShaderDesc {
                 \\   if (texel.a < 0.1) {
                 \\     discard;
                 \\   }
-                \\   vec3 lightColor = vec3(1, 1, 1);
-                \\   float ambientStrength = 0.2;
-                \\   float specularStrength = 0.5;
-                \\   vec3 ambient = ambientStrength * lightColor;
-                \\   vec3 norm = normalize(Normal);
-                \\   vec3 light_dir = normalize(lightPos - frag_pos);
-                \\   float diff = clamp(dot(norm, light_dir), 0.0, 1.0);
                 \\   vec3 viewDir = normalize(viewPos - frag_pos);
-                \\   vec3 reflectDir = reflect(-light_dir, norm);
-                \\   float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
-                \\   vec3 specular = specularStrength * spec * lightColor;
-                \\   vec3 diffuse = diff * lightColor;
-                \\   vec4 lit_color = vec4(ambient + diffuse + specular, 1.0) * color;
-                \\   frag_color = texel * lit_color;
+                \\   float ambientStrength = 0.1;
+                \\   float diffuseStrength = 0.5;
+                // \\   float specularStrength = 0.1;
+                \\   vec3 norm = normalize(Normal);
+                \\   vec3 lit = vec3(0, 0, 0);
+                \\   vec3 ambient = vec3(0, 0, 0);
+                \\   vec3 diffuse = vec3(0, 0, 0);
+                \\   for (int i = 0; i < numLights; i++) {
+                \\     vec3 pos = the_lights[i];
+                \\     vec3 lightColor = vec3(1, 1, 1);
+                \\     vec3 light_dir = normalize(pos - frag_pos);
+                \\     float l = length(pos - frag_pos);
+                \\     float diff = clamp(dot(norm, light_dir) / (0.1 * l * l), 0.0, 1.0);
+                // \\     vec3 reflectDir = reflect(-light_dir, norm);
+                // \\     float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);
+                \\     ambient += ambientStrength * lightColor;
+                \\     diffuse += diffuseStrength * diff * lightColor;
+                // \\     vec3 specular = specularStrength * spec * lightColor;
+                // \\     lit += ambient + diffuse + specular;
+                \\   }
+                \\   lit = ambient + diffuse;
+                \\   frag_color = texel * vec4(lit, 1.0) * color;
+                // \\   frag_color = texel * color *lit;
                 \\ }
             ;
         },
