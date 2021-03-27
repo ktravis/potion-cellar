@@ -14,6 +14,7 @@ const Buffer = @import("buffer.zig").Buffer;
 usingnamespace @import("geom.zig");
 usingnamespace @import("level.zig");
 usingnamespace @import("scene.zig");
+usingnamespace @import("sprite.zig");
 const math = @import("std").math;
 
 const zlm = @import("zlm");
@@ -28,6 +29,14 @@ const wobj = @import("wavefront-obj");
 const default_shader = @import("shaders/default.zig");
 
 const sample_count = 1;
+
+var sprite_sheet: SpriteSheet = undefined;
+
+const TARGET_WINDOW_WIDTH = 4 * 240;
+const TARGET_WINDOW_HEIGHT = 4 * 160;
+const RENDER_SCALE = 2;
+
+const SPRITE_WIZARD: usize = 24;
 
 const state = struct {
     var mouse_held: bool = false;
@@ -178,7 +187,6 @@ var render_pass: sg.Pass = .{};
 var map_open = false;
 
 export fn init() void {
-    // parse the level
     stime.setup();
     var ubuntu_32 = tt.Font.init(@embedFile(assets_dir ++ "fonts/Ubuntu-M.ttf"), 72) catch unreachable;
     // font = tt.Font.init(@embedFile("../Comic-Sans.ttf"), 42) catch unreachable;
@@ -190,7 +198,7 @@ export fn init() void {
 
     // framebuffer clear color
     state.pass_action.colors[0] = .{ .action = .CLEAR, .value = .{ .r = 1.0, .g = 0.92, .b = 0.8, .a = 1.0 } };
-    state.opa.colors[0] = .{ .action = .CLEAR, .value = .{ .r = 1.0, .g = 0, .b = 1, .a = 1.0 } };
+    state.opa.colors[0] = .{ .action = .CLEAR, .value = .{ .r = 0.98, .g = 0.94, .b = 0.6, .a = 1.0 } };
 
     {
         const defaultShader = sg.makeShader(default_shader.desc());
@@ -213,7 +221,8 @@ export fn init() void {
         };
         pip_desc.layout.attrs[0].format = .FLOAT3;
         pip_desc.layout.attrs[1].format = .UBYTE4N;
-        pip_desc.layout.attrs[2].format = .SHORT2N;
+        pip_desc.layout.attrs[2].format = .FLOAT2;
+        pip_desc.layout.attrs[3].format = .FLOAT3;
         state.pip = sg.makePipeline(pip_desc);
         pip_desc.depth.pixel_format = .DEPTH;
         state.offscreen_pip = sg.makePipeline(pip_desc);
@@ -232,16 +241,12 @@ export fn init() void {
         .mesh = quad_mesh,
         .texture = makeImageTexture(@embedFile(assets_dir ++ "images/test.png")),
         .transform = floor_transform,
-        .pos = .{ .x = 0, .y = 0, .z = 0 },
+        .pos = .{ .x = 0, .y = 0.05, .z = 0 },
     });
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     var alloc = &arena.allocator;
-
-    const statue = loadObjModelFromFile(alloc, "assets/models/tree_fat.obj") catch {
-        @panic("failed loading statue");
-    };
 
     // build the level mesh
     const level_start_x = -10;
@@ -254,9 +259,15 @@ export fn init() void {
     };
     const block_size: Vec3 = .{
         .x = Level.TILE_SCALE,
-        .y = 2,
+        .y = 3,
         .z = Level.TILE_SCALE,
     };
+
+    const sheet_image = stbi.loadFromMemory(@embedFile(assets_dir ++ "images/monochrome_packed.png"), 4);
+    const sheet = SpriteSheet.fromImage(sheet_image, 16, 16);
+
+    var wall = sheet.index(18 * 16);
+    wall.tint = 0xff90a5ad;
 
     level = Level.init(levelString);
     var l_it = level.iter();
@@ -270,7 +281,11 @@ export fn init() void {
                     cube.east_face_verts ++
                     // cube.bottom_face_verts ++
                     cube.top_face_verts;
-                for (faces) |v| {
+                for (faces) |fv| {
+                    var v = fv;
+                    v.u = wall.uv_rect.a.x + v.u * (wall.uv_rect.b.x - wall.uv_rect.a.x);
+                    v.v = wall.uv_rect.a.y + v.v * (wall.uv_rect.b.y - wall.uv_rect.a.y);
+                    v.color = wall.tint;
                     _ = level_mesh_data.verts.append(v.translate(.{ .x = @intToFloat(f32, c.x), .y = 0, .z = @intToFloat(f32, c.y) })) catch unreachable;
                 }
                 var i: u16 = 0;
@@ -291,7 +306,19 @@ export fn init() void {
         .mesh = level_mesh,
         .transform = Mat4.createScale(block_size.x, block_size.y, block_size.z),
         .pos = level_start,
+        .texture = sheet.texture,
         // .texture = map_texture,
+    });
+
+    const sheet_image_transparent = stbi.loadFromMemory(@embedFile(assets_dir ++ "images/monochrome_transparent_packed.png"), 4);
+    sprite_sheet = SpriteSheet.fromImage(sheet_image_transparent, 16, 16);
+    var wiz = sprite_sheet.index(SPRITE_WIZARD);
+    wiz.tint = 0xff0000ff;
+    _ = sr.objs.add(.{
+        .mesh = sr.loadSprite(wiz),
+        .texture = sprite_sheet.texture,
+        .pos = .{ .x = 3, .y = player.height, .z = 6 },
+        .billboard = true,
     });
 }
 
@@ -309,7 +336,6 @@ export fn event(_e: [*c]const sapp.Event) void {
         .MOUSE_DOWN => {
             // switch (e.mouse_button) {
             //     .LEFT => {
-            //         state.mouse_held = true;
             //     },
             //     else => {},
             // }
@@ -380,16 +406,16 @@ fn drawMap() void {
     r.drawRect(.{ .pos = .{ .x = xy.x - 2, .y = xy.y + map_h }, .w = map_w + 4, .h = 2 }, .{});
 }
 
-const minimap_max_w = 512 / 4;
-const minimap_max_h = 512 / 4;
+const minimap_max_w = 512 / RENDER_SCALE;
+const minimap_max_h = 512 / RENDER_SCALE;
 var map_texture: sg.Image = .{};
 var render_texture: sg.Image = .{};
 
 fn renderPass() sg.Pass {
     var img_desc: sg.ImageDesc = .{
         .render_target = true,
-        .width = 240,
-        .height = 160,
+        .width = TARGET_WINDOW_WIDTH / RENDER_SCALE,
+        .height = TARGET_WINDOW_HEIGHT / RENDER_SCALE,
         .pixel_format = .RGBA8,
         .min_filter = .NEAREST,
         .mag_filter = .NEAREST,
@@ -539,13 +565,13 @@ export fn frame() void {
         const proj = Mat4.createPerspective(zlm.toRadians(60.0), sapp.widthf() / sapp.heightf(), 0.01, 100.0);
         const view_proj = Mat4.mul(proj, sr.camera.view());
 
-        r.begin(Mat4.createOrthogonal(0, sapp.widthf() / 4, sapp.heightf() / 4, 0, -1, 1));
+        r.begin(Mat4.createOrthogonal(0, sapp.widthf() / RENDER_SCALE, sapp.heightf() / RENDER_SCALE, 0, -1, 1));
 
         {
             if (map_open) {
-                r.drawRectTextured(.{ .pos = .{ .x = (sapp.widthf() / 4) / 2 - 250 / 4, .y = 10 / 4 }, .w = minimap_max_w, .h = minimap_max_h }, .{}, map_texture);
+                r.drawRectTextured(.{ .pos = .{ .x = (sapp.widthf() / RENDER_SCALE) / 2 - 250 / RENDER_SCALE, .y = 10 / RENDER_SCALE }, .w = minimap_max_w, .h = minimap_max_h }, .{}, map_texture);
             } else {
-                r.drawRectTextured(.{ .pos = .{ .x = sapp.widthf() / 4 - 60, .y = 2 }, .w = minimap_max_w / 2, .h = minimap_max_h / 2 }, .{ .tint = 0xaaffffff }, map_texture);
+                r.drawRectTextured(.{ .pos = .{ .x = sapp.widthf() / RENDER_SCALE - 60, .y = 2 }, .w = minimap_max_w / 2, .h = minimap_max_h / 2 }, .{ .tint = 0xaaffffff }, map_texture);
             }
         }
 
@@ -557,9 +583,11 @@ export fn frame() void {
         sg.beginDefaultPass(state.pass_action, sapp.width(), sapp.height());
         sg.applyPipeline(state.pip);
         r.begin(Mat4.createOrthogonal(0, sapp.widthf(), sapp.heightf(), 0, -1, 1));
+
         r.drawRectTextured(.{ .pos = .{ .x = 0, .y = 0 }, .w = sapp.widthf(), .h = sapp.heightf() }, .{}, render_texture);
         var buf: [256]u8 = undefined;
-        textRenderer.drawString(&r, std.fmt.bufPrint(&buf, "pos: [{}, {}]", .{ player.coord.x, player.coord.y }) catch "error", .{ .x = 8, .y = 28 }, .{ .scale = 0.5 });
+        textRenderer.drawString(&r, std.fmt.bufPrint(&buf, "pos: [{}]", .{level.fromGridCoord(player.coord)}) catch "error", .{ .x = 8, .y = 28 }, .{ .scale = 0.5 });
+
         r.end();
         sg.endPass();
     }
@@ -577,8 +605,8 @@ pub fn main() void {
         .frame_cb = frame,
         .event_cb = event,
         .cleanup_cb = cleanup,
-        .width = 240 * 4,
-        .height = 160 * 4,
+        .width = TARGET_WINDOW_WIDTH,
+        .height = TARGET_WINDOW_HEIGHT,
         .sample_count = sample_count,
         .window_title = "potion cellar",
     });

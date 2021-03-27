@@ -8,11 +8,11 @@ const Vec2 = zlm.Vec2;
 const Vec3 = zlm.Vec3;
 const Mat4 = zlm.Mat4;
 const default_shader = @import("shaders/default.zig");
-const normFloat = @import("geom.zig").normFloat;
+usingnamespace @import("geom.zig");
 
 const Buffer = @import("buffer.zig").Buffer;
 
-pub const Vertex = packed struct { x: f32, y: f32, z: f32, color: u32, u: i16, v: i16 };
+// pub const Vertex = packed struct { x: f32, y: f32, z: f32, color: u32, u: i16, v: i16 };
 
 pub const DrawOptions = struct {
     tint: u32 = 0xffffffff,
@@ -23,17 +23,6 @@ pub const DrawCall = struct {
     base_element: u32,
     num_elements: u32,
     texture: ?sg.Image = null,
-};
-
-pub const Rect = struct {
-    pos: Vec2,
-    w: f32,
-    h: f32,
-};
-
-pub const UVRect = struct {
-    a: Vec2 = .{ .x = 0, .y = 0 },
-    b: Vec2 = .{ .x = 1, .y = 1 },
 };
 
 pub const TextureRenderer = struct {
@@ -105,40 +94,7 @@ pub const TextureRenderer = struct {
     }
 
     pub fn drawRectTexturedWithUV(self: *Self, r: Rect, uv: UVRect, opts: DrawOptions, t: ?sg.Image) void {
-        const vertices = [4]Vertex{
-            .{
-                .x = r.pos.x,
-                .y = r.pos.y,
-                .z = 0,
-                .color = opts.tint,
-                .u = normFloat(uv.a.x),
-                .v = normFloat(uv.b.y),
-            },
-            .{
-                .x = r.pos.x + r.w * opts.scale,
-                .y = r.pos.y,
-                .z = 0,
-                .color = opts.tint,
-                .u = normFloat(uv.b.x),
-                .v = normFloat(uv.b.y),
-            },
-            .{
-                .x = r.pos.x + r.w * opts.scale,
-                .y = r.pos.y + r.h * opts.scale,
-                .z = 0,
-                .color = opts.tint,
-                .u = normFloat(uv.b.x),
-                .v = normFloat(uv.a.y),
-            },
-            .{
-                .x = r.pos.x,
-                .y = r.pos.y + r.h * opts.scale,
-                .z = 0,
-                .color = opts.tint,
-                .u = normFloat(uv.a.x),
-                .v = normFloat(uv.a.y),
-            },
-        };
+        const vertices = quad.generateVertices(r.pos, r.dim().scale(opts.scale), uv, opts.tint);
         var n: u16 = @intCast(u16, self.verts.items.len);
         _ = self.verts.addSlice(&vertices);
         var call: DrawCall = .{
@@ -147,8 +103,6 @@ pub const TextureRenderer = struct {
             .texture = t,
         };
         _ = self.calls.add(call);
-        _ = self.indices.addSlice(&[_]u16{
-            n + 0, n + 1, n + 2, n + 0, n + 2, n + 3,
-        });
+        _ = self.indices.addSlice(&quad.indicesWithOffset(n));
     }
 };

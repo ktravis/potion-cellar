@@ -11,6 +11,7 @@ const Vec3 = zlm.Vec3;
 const Mat4 = zlm.Mat4;
 
 const Buffer = @import("buffer.zig").Buffer;
+usingnamespace @import("geom.zig");
 usingnamespace @import("renderer.zig");
 
 pub const Renderer = struct {

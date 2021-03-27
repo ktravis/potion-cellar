@@ -1,11 +1,15 @@
+const std = @import("std");
 const sokol = @import("sokol");
 const sg = sokol.gfx;
 const sapp = sokol.app;
 
 const Buffer = @import("buffer.zig").Buffer;
 usingnamespace @import("geom.zig");
+usingnamespace @import("sprite.zig");
 // usingnamespace @import("math.zig");
 const zlm = @import("zlm");
+const vec2 = zlm.vec2;
+const Vec2 = zlm.Vec2;
 const vec3 = zlm.vec3;
 const Vec3 = zlm.Vec3;
 const Mat4 = zlm.Mat4;
@@ -26,9 +30,10 @@ pub const Object = struct {
     mesh: Mesh,
     texture: ?sg.Image = null,
 
-    pos: Vec3 = Vec3.zero(),
-    transform: Mat4 = Mat4.identity(),
+    pos: Vec3 = Vec3.zero,
+    transform: Mat4 = Mat4.identity,
     vs_params: object_shader.VsParams = undefined,
+    billboard: bool = false,
 };
 
 pub const Camera = struct {
@@ -75,7 +80,7 @@ pub const SceneRenderer = struct {
         };
         pip_desc.layout.attrs[0].format = .FLOAT3;
         pip_desc.layout.attrs[1].format = .UBYTE4N;
-        pip_desc.layout.attrs[2].format = .SHORT2N;
+        pip_desc.layout.attrs[2].format = .FLOAT2;
         pip_desc.layout.attrs[3].format = .FLOAT3;
         pip_desc.colors[0].blend = .{
             .enabled = true,
@@ -144,6 +149,11 @@ pub const SceneRenderer = struct {
         return m;
     }
 
+    // TODO(ktravis): cache based on sprite index
+    pub fn loadSprite(self: *Self, s: Sprite) Mesh {
+        return self.loadMesh(&quad.generateVertices(vec2(-0.5, -0.5), vec2(1, 1), s.uv_rect.flipY(), s.tint), quad.indices);
+    }
+
     pub fn drawMesh(self: *Self, m: Mesh, vs_params: object_shader.VsParams) void {
         sg.applyUniforms(.VS, 0, sg.asRange(vs_params));
         sg.draw(m.base_element, m.num_elements, 1);
@@ -165,7 +175,12 @@ pub const SceneRenderer = struct {
             self.bind.fs_images[0] = obj.texture orelse self.default_texture;
             sg.applyBindings(self.bind);
             var vs_params = obj.vs_params;
-            vs_params.model = Mat4.mul(Mat4.createTranslation(obj.pos), obj.transform);
+            var t = obj.transform;
+            if (obj.billboard) {
+                const turnToFace = Mat4.createAngleAxis(self.camera.up, std.math.atan2(f32, obj.pos.x - self.camera.pos.x, self.camera.pos.z - obj.pos.z));
+                t = t.mul(turnToFace);
+            }
+            vs_params.model = Mat4.mul(Mat4.createTranslation(obj.pos), t);
             vs_params.view = self.camera.view();
             vs_params.view_pos = self.camera.pos;
             vs_params.projection = proj;
